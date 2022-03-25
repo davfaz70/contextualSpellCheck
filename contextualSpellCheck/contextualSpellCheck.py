@@ -1,6 +1,4 @@
-import copy
 import logging
-import os
 import warnings
 from datetime import datetime
 import unicodedata
@@ -13,6 +11,8 @@ from spacy.vocab import Vocab
 from transformers import AutoModelForMaskedLM, AutoTokenizer
 from spacy.language import Language
 
+from spellchecker import SpellChecker
+import time
 
 @Language.factory("contextual spellchecker")
 class ContextualSpellCheck(object):
@@ -26,8 +26,7 @@ class ContextualSpellCheck(object):
         self,
         nlp,
         name,
-        vocab_path: str = "",
-        model_name: str = "bert-base-cased",
+        model_name: str = "dbmdz/bert-base-italian-uncased",
         max_edit_dist: int = 10,
         debug: bool = False,
         performance: bool = False,
@@ -48,67 +47,10 @@ class ContextualSpellCheck(object):
                                           Defaults to False.
         """
 
-        if vocab_path != "":
-            vocab_path = str(vocab_path)
-            try:
-                # First open() for user specified word addition to vocab
-                with open(vocab_path, encoding="utf8") as f:
-                    print(vocab_path)
-                    print("inside vocab path")
-                    # if want to remove '[unusedXX]' from vocab
-                    # words = [
-                    #     line.rstrip()
-                    #     for line in f
-                    #     if not line.startswith("[unused")
-                    # ]
-                    words = [line.strip() for line in f]
-
-                # The below code adds the necessary words like numbers
-                # /punctuations/tokenizer specific words like [PAD]/[
-                # unused0]/##M
-                print("file opened!")
-                current_path = os.path.dirname(__file__)
-                vocab_path = os.path.join(current_path, "data", "vocab.txt")
-                extra_token = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
-                words.extend(extra_token)
-
-                with open(vocab_path, encoding="utf8") as f:
-                    print("Inside [unused....]")
-                    # if want to remove '[unusedXX]' from vocab
-                    # words = [
-                    #     line.rstrip()
-                    #     for line in f
-                    #     if not line.startswith("[unused")
-                    # ]
-                    for line in f:
-                        extra_token = line.strip()
-                        if extra_token.startswith("[unused"):
-                            words.append(extra_token)
-                        elif extra_token.startswith("##"):
-                            words.append(extra_token)
-                        elif len(extra_token) == 1:
-                            words.append(extra_token)
-                if debug:
-                    debug_file_path = os.path.join(
-                        current_path, "tests", "debugFile.txt"
-                    )
-                    with open(debug_file_path, "w+") as new_file:
-                        new_file.write("\n".join(words))
-                    print("Final vocab at " + debug_file_path)
-
-            except Exception as e:
-                print(e)
-                warnings.warn("Using default vocab")
-                vocab_path = ""
-                words = []
-
         self.max_edit_dist = int(float(max_edit_dist))
         self.model_name = str(model_name)
         self.BertTokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
-        if vocab_path == "":
-            words = list(self.BertTokenizer.get_vocab().keys())
-        self.vocab = Vocab(strings=words)
         logging.getLogger("transformers").setLevel(logging.ERROR)
         self.BertModel = AutoModelForMaskedLM.from_pretrained(self.model_name)
         self.mask = self.BertTokenizer.mask_token
@@ -178,7 +120,7 @@ class ContextualSpellCheck(object):
                 doc._.set("outcome_spellCheck", cleaned_sentence)
         return doc
 
-    def check(self, query="", spacy_model="en_core_web_sm"):
+    def check(self, query="", spacy_model="it_core_news_lg"):
         """
         Complete pipeline for **testing purpose only**
 
@@ -243,13 +185,12 @@ class ContextualSpellCheck(object):
         # deep copy is required to preserve individual token info
         # from objects in pipeline which can modify token info
         # like merge_entities
-        docCopy = copy.deepcopy(doc)
+        
 
         misspell = []
-        for token in docCopy:
+        for token in doc:
             if (
-                (token.text.lower() not in self.vocab)
-                and (token.ent_type_ != "PERSON")
+                (token.ent_type_ != "PERSON")
                 and (not token.like_num)
                 and (not token.like_email)
                 and (not token.like_url)
@@ -259,8 +200,7 @@ class ContextualSpellCheck(object):
                 and (token.ent_type_ != "GPE")
                 and (token.ent_type_ != "ORG")
             ):
-                if self.deep_tokenize_in_vocab(token.text):
-                    misspell.append(token)
+                misspell.append(token)
         if self.debug:
             print("misspell identified: ", misspell)
         return misspell, doc
@@ -515,7 +455,7 @@ class ContextualSpellCheck(object):
                                         token-2: [], token-3: [('suggestion-1',
                                         score-1), ...], ...}
         """
-        return {token: self.token_score_spell_check(token) for token in span}
+        return {str(token): self.token_score_spell_check(token) for token in span}
 
     def span_require_spell_check(self, span):
         """
@@ -637,7 +577,7 @@ class ContextualSpellCheck(object):
 
 if __name__ == "__main__":
     print("Code running...")
-    nlp = spacy.load("en_core_web_sm")
+    nlp = spacy.load("it_core_news_lg")
     # for issue #1
     # merge_ents = nlp.create_pipe("merge_entities")
     if "parser" not in nlp.pipe_names:
@@ -645,34 +585,85 @@ if __name__ == "__main__":
             "parser is required please enable it in nlp pipeline"
         )
     #    checker = ContextualSpellCheck(debug=True, max_edit_dist=3)
+
+    spell = SpellChecker(language="it", distance=2)
     nlp.add_pipe(
-        "contextual spellchecker", config={"debug": True, "max_edit_dist": 3}
+        "contextual spellchecker", config={"max_edit_dist": 10}
     )
+    initial_text = "accenxi il camipo in stufio"
+    words = initial_text.split()
 
-    # nlp.add_pipe(merge_ents)
+    
+    mispelling = spell.unknown(words)
+    control_words = []
+    control_alternatives = []
+    for word in words:
+        if word in mispelling: 
+            correction = spell.correction(word)
+            #print(correction)
+            control_words.append(correction)
+            candidates = list(spell.candidates(word))
+            #print(candidates)
+            control_alternatives.append(candidates)
+        else:
+            control_words.append(word)
+            control_alternatives.append(None)
+    print("Initial text: " + initial_text)
+    initial_text = " ".join(control_words)
+    print("Text from statistical model: " + initial_text)
+    print("Alternatives from statistical model: ", control_alternatives)
 
-    doc = nlp(
-        "Income was $9.4 milion compared to the prior year of $2.7 milion."
-    )
+    nlp.enable_pipe("contextual spellchecker")
 
-    print("=" * 20, "Doc Extension Test", "=" * 20)
-    print(doc._.outcome_spellCheck)
+    doc = nlp(initial_text)
+    bert_alternatives = doc[0::]._.score_spellCheck
 
-    print(doc._.contextual_spellCheck)
-    print(doc._.performed_spellCheck)
-    print(doc._.suggestions_spellCheck)
-    print(doc._.score_spellCheck)
+    suggestions = doc._.suggestions_spellCheck
+    suggestions_values = list(suggestions.values())
+    print("Words from BERT: ", suggestions_values)
+    print("Alternatives from BERT: ", bert_alternatives)
 
-    token_pos = 4
-    print("=" * 20, "Token Extension Test", "=" * 20)
-    print(doc[token_pos].text, doc[token_pos].i)
-    print(doc[token_pos]._.get_require_spellCheck)
-    print(doc[token_pos]._.get_suggestion_spellCheck)
-    print(doc[token_pos]._.score_spellCheck)
+    c = 0
+    correct = []
 
-    span_start = token_pos - 2
-    span_end = token_pos + 2
-    print("=" * 20, "Span Extension Test", "=" * 20)
-    print(doc[span_start:span_end].text)
-    print(doc[span_start:span_end]._.get_has_spellCheck)
-    print(doc[span_start:span_end]._.score_spellCheck)
+    nlp.disable_pipe("contextual spellchecker")
+
+    for suggest in suggestions_values:
+        doc1 = nlp(suggest)
+        doc2 = nlp(control_words[c])
+        #la parola trovata dal modello statistico è simile a quella tovata da BERT? 
+        if doc1.similarity(doc2) > 0.80:
+            correct.append(control_words[c])
+        elif control_alternatives[c] is not None:
+            #controlla se la parola trovata da BERT è simile a una delle alternative del modello statistico
+            for alternative in control_alternatives[c]:
+                doc2 = nlp(alternative)
+                if doc1.similarity(doc2) > 0.89:
+                    correct.append(alternative)
+            if len(correct) == c:
+                #controlla se una delle alternative di BERT è simile a una delle alternative del modello statistico
+                for element in bert_alternatives[control_words[c]]:
+                    for alternative in control_alternatives[c]:
+                        doc2 = nlp(alternative)
+                        doc4 = nlp(element[0])
+                        if doc2.similarity(doc4) > 0.89:
+                            correct.append(element[0])
+                if len(correct) == c:
+                    correct.append(control_words[c])
+        else:
+            #incertezza, per sicurezza viene presa la parola del modello statistico in quanto più probabile.
+            correct.append(control_words[c])
+        c = c+1
+   
+    final_text = " ".join(correct)
+    
+    print("Final text: " + final_text)
+
+            
+                    
+        
+
+
+    
+
+    
